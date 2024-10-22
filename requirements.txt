@@ -1,0 +1,3 @@
+streamlit
+pytube
+youtube-transcript-api
