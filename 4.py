@@ -1,82 +1,109 @@
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
-from pytube import Search, YouTube
+from youtubesearchpython import VideosSearch
 from concurrent.futures import ThreadPoolExecutor
-import time
 
 class YouTubeSubtitleSearch:
     def __init__(self):
-        self.links = {}
         self.executor = ThreadPoolExecutor(max_workers=3)
+        self.music_keywords = ['official music video', 'mv', '뮤직비디오', 'lyrics', '가사', 
+                             'song', 'music', '노래', 'concert', 'live performance']
+        self.conversation_keywords = ['interview', 'talk show', 'podcast', 'discussion',
+                                    'series', 'episode', 'movie scene', 'sitcom', 'drama',
+                                    'tutorial', 'lesson', 'conversation', 'dialogue']
+
+    def is_music_content(self, title, description):
+        title_lower = title.lower()
+        desc_lower = description.lower() if description else ""
+        return any(keyword in title_lower or keyword in desc_lower 
+                  for keyword in self.music_keywords)
+
+    def is_conversation_content(self, title, description):
+        title_lower = title.lower()
+        desc_lower = description.lower() if description else ""
+        return any(keyword in title_lower or keyword in desc_lower 
+                  for keyword in self.conversation_keywords)
+
+    def get_full_sentence(self, subtitles, current_index):
+        if not subtitles or current_index >= len(subtitles):
+            return ""
+            
+        sentence = subtitles[current_index]['text']
+        
+        if not sentence.strip().endswith('.'):
+            i = current_index + 1
+            while i < len(subtitles):
+                next_text = subtitles[i]['text']
+                sentence += ' ' + next_text
+                if next_text.strip().endswith('.'):
+                    break
+                i += 1
+        
+        if not sentence[0].isupper() and current_index > 0:
+            i = current_index - 1
+            while i >= 0:
+                prev_text = subtitles[i]['text']
+                if prev_text.strip().endswith('.'):
+                    break
+                sentence = prev_text + ' ' + sentence
+                i -= 1
+        
+        return sentence.strip()
 
     def search_videos(self, search_query):
         try:
-            s = Search(search_query)
-            # 검색 결과가 준비될 때까지 대기
-            time.sleep(2)
-            # 검색 결과가 없을 경우 다시 시도
-            if not s.results:
-                time.sleep(2)
-                s.results = s.get_next_results()
+            enhanced_query = f"{search_query} (interview OR scene OR episode OR conversation)"
+            videosSearch = VideosSearch(enhanced_query, limit=30)
+            results = videosSearch.result()
             
+            if not results or 'result' not in results:
+                return []
+                
             videos = []
-            for result in s.results[:20]:  # 상위 20개 결과만 가져옴
-                try:
+            for result in results['result']:
+                if not result or 'id' not in result:
+                    continue
+                
+                title = result.get('title', 'No Title')
+                description = result.get('description', '')
+                
+                if not self.is_music_content(title, description):
                     video = {
-                        'id': result.video_id,
-                        'title': result.title,
-                        'url': f"https://www.youtube.com/watch?v={result.video_id}"
+                        'id': result['id'],
+                        'title': title,
+                        'url': result.get('link', ''),
+                        'thumbnail': result.get('thumbnails', [{'url': ''}])[0].get('url', ''),
+                        'description': description,
+                        'is_conversation': self.is_conversation_content(title, description)
                     }
                     videos.append(video)
-                except Exception as e:
-                    continue
             
-            # 결과가 없으면 한 번 더 시도
-            if not videos:
-                time.sleep(2)
-                s = Search(search_query)
-                for result in s.results[:20]:
-                    try:
-                        video = {
-                            'id': result.video_id,
-                            'title': result.title,
-                            'url': f"https://www.youtube.com/watch?v={result.video_id}"
-                        }
-                        videos.append(video)
-                    except Exception as e:
-                        continue
-            
-            return videos
+            videos.sort(key=lambda x: x['is_conversation'], reverse=True)
+            return videos[:20]
         except Exception as e:
             st.error(f"검색 오류: {str(e)}")
             return []
 
     def get_video_subtitles(self, video):
+        if not video or not video.get('id'):
+            return None, None, None, None
+            
         try:
-            url = video['url']
+            url = video.get('url', '')
+            thumbnail = video.get('thumbnail', '')
             transcript = None
             
-            # 한국어 자막 시도
             try:
-                transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['ko'])
+                transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en'])
             except:
-                # 영어 자막 시도
                 try:
-                    transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en'])
+                    transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en-US'])
                 except:
-                    # 자동 생성된 영어 자막 시도
-                    try:
-                        transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en-US'])
-                    except:
-                        # 자동 생성된 한국어 자막 시도
-                        try:
-                            transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['ko-KR'])
-                        except:
-                            return None, None, None
+                    return None, video.get('title'), url, thumbnail
             
-            return transcript, video['title'], url
+            return transcript, video.get('title'), url, thumbnail
         except Exception as e:
-            return None, None, None
+            return None, None, None, None
 
 def initialize_session_state():
     if 'search_results' not in st.session_state:
@@ -88,28 +115,14 @@ def initialize_session_state():
     if 'search_query' not in st.session_state:
         st.session_state.search_query = ""
 
-def stop_search():
-    st.session_state.stop_search = True
-    st.session_state.is_searching = False
-
-def start_search():
-    if st.session_state.search_query.strip():
+def perform_search():
+    """검색 실행 함수"""
+    if st.session_state.search_input and not st.session_state.is_searching:
+        st.session_state.search_query = st.session_state.search_input
         st.session_state.is_searching = True
         st.session_state.stop_search = False
         return True
     return False
-
-def create_loop_url(base_url, start_time):
-    end_time = start_time + 10
-    return f"{base_url}&start={start_time}&end={end_time}&loop=1"
-
-def format_percentage(progress):
-    return f"{progress:.1f}%"
-
-def on_search_input_change():
-    if st.session_state.search_input != st.session_state.search_query:
-        st.session_state.search_query = st.session_state.search_input
-        start_search()
 
 def main():
     st.set_page_config(
@@ -126,11 +139,12 @@ def main():
     # 검색 인터페이스
     col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
+        # 엔터키로 검색 가능하도록 on_change 이벤트 추가
         search_text = st.text_input(
             "검색어를 입력하세요", 
             key="search_input",
             value=st.session_state.search_query,
-            on_change=on_search_input_change
+            on_change=perform_search
         )
     with col2:
         search_button = st.button(
@@ -138,7 +152,7 @@ def main():
             type="primary", 
             use_container_width=True,
             disabled=st.session_state.is_searching,
-            on_click=lambda: start_search() if search_text else None
+            on_click=perform_search
         )
     
     with col3:
@@ -147,9 +161,10 @@ def main():
             type="secondary",
             use_container_width=True,
             disabled=not st.session_state.is_searching,
-            on_click=stop_search
+            on_click=lambda: setattr(st.session_state, 'stop_search', True)
         )
     
+    # 검색 버튼 클릭 또는 엔터키 입력으로 검색 시작
     if st.session_state.is_searching:
         with st.spinner("검색 중..."):
             videos = searcher.search_videos(st.session_state.search_query)
@@ -160,10 +175,9 @@ def main():
                 return
             
             video_count = 0
-            subtitle_count = 0
             results = []
+            processed_videos = set()
             
-            # 진행률 표시를 위한 컨테이너들
             progress_container = st.container()
             with progress_container:
                 progress_bar = st.progress(0)
@@ -177,40 +191,45 @@ def main():
                     st.warning("검색이 중단되었습니다.")
                     break
                 
-                progress = (i + 1) / total_videos
-                progress_percentage = progress * 100
-                progress_bar.progress(progress)
-                progress_text.markdown(f"### 진행률: {format_percentage(progress_percentage)}")
+                if not video or not video.get('id') or video.get('id') in processed_videos:
+                    continue
                 
-                subtitles, title, url = searcher.get_video_subtitles(video)
+                # 진행률을 100% 기준으로 계산
+                progress = int((i + 1) / total_videos * 100)
+                progress_bar.progress(progress / 100)  # streamlit은 0-1 사이 값을 사용
+                progress_text.markdown(f"### 진행률: {progress}%")
+                
+                subtitles, title, url, thumbnail = searcher.get_video_subtitles(video)
                 
                 if subtitles:
-                    found = False
-                    for subtitle in subtitles:
+                    for idx, subtitle in enumerate(subtitles):
                         if st.session_state.stop_search:
                             break
+                        
+                        if not subtitle or 'text' not in subtitle:
+                            continue
                             
                         if st.session_state.search_query.lower() in subtitle['text'].lower():
-                            if not found:
-                                found = True
-                                video_count += 1
+                            full_sentence = searcher.get_full_sentence(subtitles, idx)
+                            if not full_sentence:
+                                continue
                             
-                            timestamp = int(subtitle['start'])
+                            timestamp = int(subtitle.get('start', 0))
                             minutes = timestamp // 60
                             seconds = timestamp % 60
-                            time_url = create_loop_url(url, timestamp)
                             
                             results.append({
-                                'title': title,
-                                'subtitle': subtitle['text'],
-                                'time_url': time_url,
+                                'title': title or 'No Title',
+                                'full_sentence': full_sentence,
                                 'timestamp': f"{minutes}:{seconds:02d}",
-                                'raw_url': url,
-                                'start_time': timestamp
+                                'url': url or '#',
+                                'start_time': timestamp,
+                                'thumbnail': thumbnail or ''
                             })
-                            subtitle_count += 1
-                            
-                            status_text.text(f"검색된 동영상: {video_count}, 자막: {subtitle_count}개")
+                            video_count += 1
+                            processed_videos.add(video['id'])
+                            status_text.text(f"검색된 동영상: {video_count}개")
+                            break
             
             st.session_state.search_results = results
             progress_container.empty()
@@ -218,9 +237,9 @@ def main():
             if len(results) == 0:
                 st.info("자막에서 검색어를 찾을 수 없습니다. 다른 검색어나 표현을 시도해보세요.")
             elif st.session_state.stop_search:
-                st.warning(f"검색이 중단됨 - 찾은 동영상: {video_count}, 자막: {subtitle_count}개")
+                st.warning(f"검색이 중단됨 - 찾은 동영상: {video_count}개")
             else:
-                st.success(f"검색 완료 - 찾은 동영상: {video_count}, 자막: {subtitle_count}개")
+                st.success(f"검색 완료 - 찾은 동영상: {video_count}개")
             
             st.session_state.is_searching = False
             st.session_state.stop_search = False
@@ -229,17 +248,18 @@ def main():
     if st.session_state.search_results:
         for result in st.session_state.search_results:
             with st.container():
-                st.markdown(f"### {result['title']}")
-                st.markdown(f"**▶ {result['timestamp']}**")
-                st.text(result['subtitle'])
-                
-                col1, col2 = st.columns([1, 1])
+                col1, col2 = st.columns([1, 3])
                 with col1:
-                    normal_url = f"{result['raw_url']}&t={result['start_time']}"
-                    st.markdown(f"[일반 재생]({normal_url})")
+                    if result.get('thumbnail'):
+                        st.image(result['thumbnail'], use_column_width=True)
                 with col2:
-                    st.markdown(f"[10초 반복 재생]({result['time_url']})")
-                
+                    st.markdown(f"### {result['title']}")
+                    st.markdown(f"**▶ {result['timestamp']}**")
+                    st.text(result['full_sentence'])
+                    
+                    if result.get('url') and result.get('start_time'):
+                        url_with_timestamp = f"{result['url']}&t={result['start_time']}"
+                        st.markdown(f"[동영상 보기]({url_with_timestamp})")
                 st.divider()
 
 if __name__ == "__main__":
