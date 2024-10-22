@@ -1,7 +1,6 @@
 import streamlit as st
+from pytube import Search
 from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp
-import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 import time
 
@@ -9,39 +8,34 @@ class YouTubeSubtitleSearch:
     def __init__(self):
         self.links = {}
         self.executor = ThreadPoolExecutor(max_workers=3)
-        self.ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-        }
 
     def search_videos(self, search_query):
         try:
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                # YouTube 검색 URL 생성
-                search_url = f"ytsearch20:{search_query}"  # 상위 20개 결과만 검색
-                result = ydl.extract_info(search_url, download=False)
-                
-                if 'entries' in result:
-                    return result['entries']
-                return []
+            s = Search(search_query)
+            videos = []
+            for result in s.results[:20]:  # 상위 20개 결과만 가져옴
+                video = {
+                    'id': result.video_id,
+                    'title': result.title,
+                    'url': f"https://www.youtube.com/watch?v={result.video_id}"
+                }
+                videos.append(video)
+            return videos
         except Exception as e:
             st.error(f"검색 오류: {str(e)}")
             return []
 
     def get_video_subtitles(self, video):
         try:
-            video_id = video['id']
-            url = f"https://www.youtube.com/watch?v={video_id}"
             try:
-                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
+                transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['ko'])
             except:
                 try:
-                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                    transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en'])
                 except:
                     return None, None, None
                     
-            return transcript, video['title'], url
+            return transcript, video['title'], video['url']
         except Exception as e:
             return None, None, None
 
@@ -70,13 +64,9 @@ def main():
 
     st.title("영어 수업을 위한 유튜브 자막 검색 🎥")
     
-    # 세션 상태 초기화
     initialize_session_state()
-    
-    # 검색 엔진 초기화
     searcher = YouTubeSubtitleSearch()
     
-    # 검색 인터페이스
     col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
         search_text = st.text_input("검색어를 입력하세요", key="search_input")
@@ -163,7 +153,6 @@ def main():
             st.session_state.is_searching = False
             st.session_state.stop_search = False
     
-    # 검색 결과 표시
     if st.session_state.search_results:
         for result in st.session_state.search_results:
             with st.container():
