@@ -12,14 +12,40 @@ class YouTubeSubtitleSearch:
     def search_videos(self, search_query):
         try:
             s = Search(search_query)
+            # 검색 결과가 준비될 때까지 대기
+            time.sleep(2)
+            # 검색 결과가 없을 경우 다시 시도
+            if not s.results:
+                time.sleep(2)
+                s.results = s.get_next_results()
+            
             videos = []
             for result in s.results[:20]:  # 상위 20개 결과만 가져옴
-                video = {
-                    'id': result.video_id,
-                    'title': result.title,
-                    'url': f"https://www.youtube.com/watch?v={result.video_id}"
-                }
-                videos.append(video)
+                try:
+                    video = {
+                        'id': result.video_id,
+                        'title': result.title,
+                        'url': f"https://www.youtube.com/watch?v={result.video_id}"
+                    }
+                    videos.append(video)
+                except Exception as e:
+                    continue
+            
+            # 결과가 없으면 한 번 더 시도
+            if not videos:
+                time.sleep(2)
+                s = Search(search_query)
+                for result in s.results[:20]:
+                    try:
+                        video = {
+                            'id': result.video_id,
+                            'title': result.title,
+                            'url': f"https://www.youtube.com/watch?v={result.video_id}"
+                        }
+                        videos.append(video)
+                    except Exception as e:
+                        continue
+            
             return videos
         except Exception as e:
             st.error(f"검색 오류: {str(e)}")
@@ -28,14 +54,26 @@ class YouTubeSubtitleSearch:
     def get_video_subtitles(self, video):
         try:
             url = video['url']
+            transcript = None
+            
+            # 한국어 자막 시도
             try:
                 transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['ko'])
             except:
+                # 영어 자막 시도
                 try:
                     transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en'])
                 except:
-                    return None, None, None
-                    
+                    # 자동 생성된 영어 자막 시도
+                    try:
+                        transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['en-US'])
+                    except:
+                        # 자동 생성된 한국어 자막 시도
+                        try:
+                            transcript = YouTubeTranscriptApi.get_transcript(video['id'], languages=['ko-KR'])
+                        except:
+                            return None, None, None
+            
             return transcript, video['title'], url
         except Exception as e:
             return None, None, None
@@ -117,7 +155,7 @@ def main():
             videos = searcher.search_videos(st.session_state.search_query)
             
             if not videos:
-                st.warning("검색 결과가 없습니다. 다른 검색어를 시도해보세요.")
+                st.warning("검색 결과를 찾을 수 없습니다. 다른 검색어를 시도해보세요.")
                 st.session_state.is_searching = False
                 return
             
@@ -178,7 +216,7 @@ def main():
             progress_container.empty()
             
             if len(results) == 0:
-                st.warning("검색어를 포함한 자막을 찾을 수 없습니다. 다른 검색어를 시도해보세요.")
+                st.info("자막에서 검색어를 찾을 수 없습니다. 다른 검색어나 표현을 시도해보세요.")
             elif st.session_state.stop_search:
                 st.warning(f"검색이 중단됨 - 찾은 동영상: {video_count}, 자막: {subtitle_count}개")
             else:
